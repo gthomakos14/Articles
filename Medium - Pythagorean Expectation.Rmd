@@ -1,0 +1,216 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(dplyr)
+library(stringr)
+```
+
+```{r}
+# Reads in spreadsheets and has some basic stuff to change
+# Includes a masterlist of games to remove due to any of a number of issues
+
+# taboo_list=c('http://lol.qq.com/match/match_data.shtml?bmid=6067','https://matchhistory.euw.leagueoflegends.com/en/#match-details/ESPORTSTMNT06/960833?gameHash=0179d6fcb9cbffbc&tab=overview')
+taboo_list=c('6067-7549','960833')
+
+df_2020=read.csv('Stage Data/2020Spring.csv')
+df_2020=filter(df_2020,!(gameid %in% taboo_list))
+
+df_spring=read.csv('Stage Data/2019Spring.csv')
+df_summer=read.csv('Stage Data/2019Summer.csv')
+df_2019=rbind(df_spring,df_summer)
+df_2019=filter(df_2019,!(gameid %in% taboo_list))
+
+df_2020$gamelength=df_2020$gamelength/60
+```
+
+```{r}
+# Treating the 2020 dataframe
+# Expanding dragons and towers to not just the team position, renames them to match the 2019 dataframe
+# Adds teamgold and oppteamgold column
+
+# Need to change this to just expand totalgold into teamgold, 2019 doesn't have earnedgold capabilities for the LPL
+df_2020_team=filter(df_2020,position=='team')
+df_2020_player=filter(df_2020,position!='team')
+
+df_2020_player$dragons=rep(df_2020_team$dragons,each=5)
+df_2020_player$opp_dragons=rep(df_2020_team$opp_dragons,each=5)
+
+df_2020_player$towers=rep(df_2020_team$towers,each=5)
+df_2020_player$opp_towers=rep(df_2020_team$opp_towers,each=5)
+
+df_2020_player$teamgold=rep(df_2020_team$totalgold,each=5)
+df_2020_team=mutate(df_2020_team,teamgold=totalgold)
+
+df_2020=rbind(df_2020_player,df_2020_team)
+
+df_2020=rename(df_2020,"teamdragkills"=dragons,
+       "oppdragkills"=opp_dragons,
+       "teamtowerkills"=towers,
+       "opptowerkills"=opp_towers)
+
+df_2020_blue=filter(df_2020,side=='Blue')
+df_2020_red=filter(df_2020,side=='Red')
+
+df_2020_blue$oppteamgold=df_2020_red$teamgold
+df_2020_red$oppteamgold=df_2020_blue$teamgold
+
+df_2020=rbind(df_2020_blue,df_2020_red)
+```
+
+```{r}
+# Treating the 2019 dataframe
+# Adds earnedgold, teamgold, and oppteamgold columns
+
+# LPL teams mess this up, they have no earnedgpm column but they do have a totalgold for teams
+
+df_2019_team=filter(df_2019,position=='Team')
+df_2019_player=filter(df_2019,position!='Team')
+
+df_2019_player$teamgold=rep(df_2019_team$totalgold,each=5)
+df_2019_team$teamgold=df_2019_team$totalgold
+
+df_2019=rbind(df_2019_player,df_2019_team)
+
+df_2019_blue=filter(df_2019,df_2019$side=='Blue')
+df_2019_red=filter(df_2019,df_2019$side=='Red')
+
+df_2019_blue$oppteamgold=df_2019_red$teamgold
+df_2019_red$oppteamgold=df_2019_blue$teamgold
+
+df_2019=rbind(df_2019_blue,df_2019_red)
+```
+
+```{r}
+# Eliminating all the unnecessary columns, then combining 2020 and 2019
+
+column_list=c('gameid','split','league','team','side','champion','player','gamelength','result','position','teamkills','teamdeaths',
+              'teamdragkills','oppdragkills','teamtowerkills','opptowerkills','teamgold','oppteamgold','totalgold')
+df_2020_select=select(df_2020,column_list)
+df_2019_select=select(df_2019,column_list)
+
+df=rbind(df_2020_select,df_2019_select)
+df=filter(df,!(gameid %in% taboo_list))
+df=mutate(df,splitteam=paste(substr(df$split,1,6),team))
+
+
+df_team=filter(df,position %in% c('team','Team'))
+df_player=filter(df,!(position %in% c('team','Team')))
+
+df_taboo=group_by(df_team,splitteam) %>%
+  summarize('Games'=n()) %>%
+  arrange(desc(Games)) %>%
+  filter(Games<10)
+
+df_team=filter(df_team,!(splitteam %in% df_taboo$splitteam))
+df_player=filter(df_player,!(splitteam %in% df_taboo$splitteam))
+```
+
+```{r}
+df_test=filter(df_team,!(splitteam %in% df_train$splitteam))
+df_test=group_by(df_test,splitteam) %>%
+  summarize('Games'=n()/6,
+            'tower_wr'=sum(teamtowerkills)^tower_exp/(sum(teamtowerkills)^tower_exp+sum(opptowerkills)^tower_exp),
+            'dragon_wr'=sum(teamdragkills)^drag_exp/(sum(teamdragkills)^drag_exp+sum(oppdragkills)^drag_exp),
+            'kill_wr'=sum(teamkills)^kill_exp/(sum(teamkills)^kill_exp+sum(teamdeaths)^kill_exp),
+            'gold_wr'=sum(teamgold)^gold_exp/(sum(teamgold)^gold_exp+sum(oppteamgold)^gold_exp),
+            'actual_wr'=mean(result),
+            'expected_wr'=mean(c(tower_wr,dragon_wr,kill_wr,gold_wr)),
+            'gap'=abs(actual_wr-expected_wr)) %>%
+  arrange(desc(expected_wr))
+mean(abs(df_test$actual_wr-df_test$expected_wr))
+mean(abs(df_test$actual_wr-df_test$tower_wr))
+mean(abs(df_test$actual_wr-df_test$dragon_wr))
+mean(abs(df_test$actual_wr-df_test$kill_wr))
+mean(abs(df_test$actual_wr-df_test$gold_wr))
+```
+
+```{r}
+plot(dfTD$t-dfTD$ta,dfTD$w/(dfTD$w+dfTD$l),
+     xlab='Tower Differential',ylab='Win Rate',
+     main='Win Rate vs Tower Differential')
+```
+
+```{r}
+dfTD=group_by(df_team,splitteam) %>%
+  summarize('w'=sum(result),
+            'l'=n()-sum(result),
+            't'=sum(teamtowerkills),
+            'ta'=sum(opptowerkills),
+            'dr'=sum(teamdragkills),
+            'da'=sum(oppdragkills),
+            'k'=sum(teamkills),
+            'ka'=sum(teamdeaths),
+            'g'=sum(teamgold),
+            'ga'=sum(oppteamgold),
+            'tower_diff'=t-ta,
+            'win_rate'=mean(result))
+
+dfTD$logWratio=log(dfTD$w/dfTD$l)
+dfTD$logTratio=log(dfTD$t/dfTD$ta)
+dfTD$logDratio=log(dfTD$dr/dfTD$da)
+dfTD$logKratio=log(dfTD$k/dfTD$ka)
+dfTD$logGratio=log(dfTD$g/dfTD$ga)
+
+df_train=dfTD[sample(nrow(dfTD),floor(0.75*nrow(dfTD))),]
+
+pytTowerFit=lm(logWratio~0+logTratio,data=df_train)
+tower_exp=summary(pytTowerFit)$coefficients[1]
+  
+pytDragonFit=lm(logWratio~0+logDratio,data=df_train)
+drag_exp=summary(pytDragonFit)$coefficients[1]
+  
+pytKillFit=lm(logWratio~0+logKratio,data=df_train)
+kill_exp=summary(pytKillFit)$coefficients[1]
+
+pytGoldFit=lm(logWratio~0+logGratio,data=df_train)
+gold_exp=summary(pytGoldFit)$coefficients[1]
+
+print(tower_exp)
+print(drag_exp)
+print(kill_exp)
+print(gold_exp)
+```
+
+```{r}
+lin_reg=lm(win_rate ~ tower_diff, data=dfTD)
+
+plot(dfTD$t-dfTD$ta,dfTD$w/(dfTD$w+dfTD$l),
+     xlab='Tower Differential',ylab='Win Rate',
+     main='Win Rate vs Tower Differential')
+abline(a=lin_reg$coefficients[1],b=lin_reg$coefficients[2])
+```
+
+```{r}
+plot(dfTD$t^tower_exp/(dfTD$t^tower_exp+dfTD$ta^tower_exp),dfTD$win_rate,
+     xlab='Tower Win Rate',ylab='Win Rate',
+     main='Win Rate vs Tower Win Rate')
+abline(a=0,b=1)
+```
+
+```{r}
+pythagorize=function(df_input,grouper='splitteam',game_filter=10){
+  df_output=group_by_(df_input,grouper) %>%
+    summarize('Games'=n(),
+            'tower_wr'=sum(teamtowerkills)^tower_exp/(sum(teamtowerkills)^tower_exp+sum(opptowerkills)^tower_exp),
+            'dragon_wr'=sum(teamdragkills)^drag_exp/(sum(teamdragkills)^drag_exp+sum(oppdragkills)^drag_exp),
+            'kill_wr'=sum(teamkills)^kill_exp/(sum(teamkills)^kill_exp+sum(teamdeaths)^kill_exp),
+            'gold_wr'=sum(teamgold)^gold_exp/(sum(teamgold)^gold_exp+sum(oppteamgold)^gold_exp),
+            'actual_wr'=mean(result),
+            'expected_wr'=mean(c(tower_wr,dragon_wr,kill_wr,gold_wr))) %>%
+    arrange(desc(expected_wr)) %>%
+    filter(Games>=game_filter)
+  return(df_output)
+}
+```
+
+```{r}
+df_plot=pythagorize(df_team)
+plot(df_plot$expected_wr,df_plot$actual_wr,
+     xlab='Expected Win Rate',ylab='Actual Win Rate',
+     main='Actual Win Rate vs Expected Win Rate')
+abline(a=0,b=1)
+```
+
